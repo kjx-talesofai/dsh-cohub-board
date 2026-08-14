@@ -1,16 +1,30 @@
 {
   "name": "dsh-cohub-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "index.js",
-  "files": ["index.js", "cordis.patch.yml", "README.md"],
+  "files": ["index.js", "lib/client.js", "cordis.patch.yml", "README.md"],
+  "exports": {
+    ".": { "default": "./index.js" },
+    "./client": { "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*"
   }
 }

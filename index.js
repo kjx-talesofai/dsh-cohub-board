@@ -1,5 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import Schema from '@deepseek-ai/schemastery';
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 
 export const name = 'cohub-board';
 export const inject = ['tools', 'timer'];
@@ -15,7 +16,7 @@ const HEX_TO_TOKEN = {
   '#3b82f6': 'blue', '#ef4444': 'rose', '#22c55e': 'green', '#f59e0b': 'amber', '#111827': 'black',
 };
 
-function newId(seq) { return 'dsh-' + (++seq) + '-' + Math.random().toString(36).slice(2, 8); }
+function newId(counter) { return 'dsh-' + (++counter.n) + '-' + Math.random().toString(36).slice(2, 8); }
 
 function cleanPoints(raw) {
   if (!Array.isArray(raw)) return [];
@@ -40,29 +41,29 @@ function bboxFrame(pts, pad) {
   return { x: minX - p, y: minY - p, width: Math.max(1, maxX - minX + p * 2), height: Math.max(1, maxY - minY + p * 2), rotation: 0 };
 }
 
-function buildItem(args, seq) {
+function buildItem(args, counter) {
   const color = HEX_TO_TOKEN[args.color] || 'brand';
   const size = Number.isFinite(Number(args.size)) ? Math.max(1, Math.min(64, Number(args.size))) : 3;
   const pts = cleanPoints(args.points);
   const kind = args.kind;
   if (kind === 'line' && pts.length >= 2) {
     const a = pts[0], b = pts[1]; const pad = Math.max(8, size * 2);
-    return { id: newId(seq), type: 'arrow', frame: bboxFrame([a, b], pad), start: { x: a.x, y: a.y }, end: { x: b.x, y: b.y }, bend: 0, color, size, arrowStart: false, arrowEnd: false, label: '' };
+    return { id: newId(counter), type: 'arrow', frame: bboxFrame([a, b], pad), start: { x: a.x, y: a.y }, end: { x: b.x, y: b.y }, bend: 0, color, size, arrowStart: false, arrowEnd: false, label: '' };
   }
-  if (kind === 'rect' && pts.length >= 2) { const a = pts[0], b = pts[1]; return { id: newId(seq), type: 'geo', frame: bboxFrame([a, b], 0), geo: 'rectangle', text: '', color, fillOpacity: 0 }; }
-  if (kind === 'ellipse' && pts.length >= 2) { const a = pts[0], b = pts[1]; return { id: newId(seq), type: 'geo', frame: bboxFrame([a, b], 0), geo: 'ellipse', text: '', color, fillOpacity: 0 }; }
+  if (kind === 'rect' && pts.length >= 2) { const a = pts[0], b = pts[1]; return { id: newId(counter), type: 'geo', frame: bboxFrame([a, b], 0), geo: 'rectangle', text: '', color, fillOpacity: 0 }; }
+  if (kind === 'ellipse' && pts.length >= 2) { const a = pts[0], b = pts[1]; return { id: newId(counter), type: 'geo', frame: bboxFrame([a, b], 0), geo: 'ellipse', text: '', color, fillOpacity: 0 }; }
   if (kind === 'circle' && pts.length >= 2) {
     const c = pts[0], e = pts[1]; const r = Math.sqrt((e.x - c.x) * (e.x - c.x) + (e.y - c.y) * (e.y - c.y));
-    return { id: newId(seq), type: 'geo', frame: { x: c.x - r, y: c.y - r, width: Math.max(1, r * 2), height: Math.max(1, r * 2), rotation: 0 }, geo: 'ellipse', text: '', color, fillOpacity: 0 };
+    return { id: newId(counter), type: 'geo', frame: { x: c.x - r, y: c.y - r, width: Math.max(1, r * 2), height: Math.max(1, r * 2), rotation: 0 }, geo: 'ellipse', text: '', color, fillOpacity: 0 };
   }
-  if (kind === 'frame' && pts.length >= 2) { const a = pts[0], b = pts[1]; return { id: newId(seq), type: 'frame', frame: bboxFrame([a, b], 0), label: '', color }; }
+  if (kind === 'frame' && pts.length >= 2) { const a = pts[0], b = pts[1]; return { id: newId(counter), type: 'frame', frame: bboxFrame([a, b], 0), label: '', color }; }
   if (kind === 'text') {
     const p = pts[0] || { x: 0, y: 0 };
-    return { id: newId(seq), type: 'text', frame: { x: p.x, y: p.y, width: 120, height: 64, rotation: 0 }, text: (typeof args.text === 'string' && args.text) ? args.text : 'A', color, fontSize: Math.max(2, Math.min(512, size * 8)) };
+    return { id: newId(counter), type: 'text', frame: { x: p.x, y: p.y, width: 120, height: 64, rotation: 0 }, text: (typeof args.text === 'string' && args.text) ? args.text : 'A', color, fontSize: Math.max(2, Math.min(512, size * 8)) };
   }
   const pad = Math.max(8, size * 2);
   const frame = bboxFrame(pts, pad);
-  return { id: newId(seq), type: 'draw', frame, points: pts.map((p) => ({ x: p.x - frame.x, y: p.y - frame.y, p: 0.5 })), color, size };
+  return { id: newId(counter), type: 'draw', frame, points: pts.map((p) => ({ x: p.x - frame.x, y: p.y - frame.y, p: 0.5 })), color, size };
 }
 
 function itemToData(item) {
@@ -99,76 +100,128 @@ function parseJsonOutput(text) {
   return JSON.parse(text.slice(idx));
 }
 
-export function apply(ctx, config) {
-  const shell = ctx.get('shell');
-  let items = [];
-  let seq = 0;
-  let boardVersion = 0;
-  let pushChain = Promise.resolve();
-  let clearing = false;
+// ---- Remote method decoration (plain-JS equivalent of @Remote) ----
+const _remoteInits = [];
+function remoteMethod(name) {
+  const ctx = {
+    kind: 'method',
+    name,
+    private: false,
+    static: false,
+    addInitializer(fn) { _remoteInits.push(fn); },
+  };
+  Remote(name)(undefined, ctx);
+}
 
-  async function cohubApply(tx) {
-    if (!shell) throw new Error('no shell service');
+class BoardService extends TypertRemoteService {
+  constructor(ctx, config) {
+    super(ctx, 'board');
+    this.config = config;
+    this.shell = ctx.get('shell');
+    this.items = [];
+    this.counter = { n: 0 };
+    this.boardVersion = 0;
+    this.pushChain = Promise.resolve();
+    this.clearing = false;
+    _remoteInits.forEach((fn) => fn.call(this));
+    this.refresh();
+    ctx.interval(() => this.refresh(), 2000);
+  }
+
+  async cohubApply(tx) {
+    if (!this.shell) throw new Error('no shell service');
     const json = JSON.stringify(tx);
-    const command = "cohub -s " + config.spaceId + " boards apply " + config.boardId + " -i - --json << 'COHUBTX'\n" + json + "\nCOHUBTX";
-    const result = await shell.run(shell.resolve({ command, timeoutMs: 30000 }));
+    const command = "cohub -s " + this.config.spaceId + " boards apply " + this.config.boardId + " -i - --json << 'COHUBTX'\n" + json + "\nCOHUBTX";
+    const result = await this.shell.run(this.shell.resolve({ command, timeoutMs: 30000 }));
     const text = (result.stdout && result.stdout.text) || '';
     if (result.exitCode !== 0) throw new Error('cohub apply exit ' + result.exitCode + ': ' + ((result.stderr && result.stderr.text) || text));
     return parseJsonOutput(text);
   }
 
-  async function cohubInspect() {
-    if (!shell) throw new Error('no shell service');
-    const result = await shell.run(shell.resolve({ command: "cohub -s " + config.spaceId + " boards inspect " + config.boardId + " --json", timeoutMs: 30000 }));
+  async cohubInspect() {
+    if (!this.shell) throw new Error('no shell service');
+    const result = await this.shell.run(this.shell.resolve({ command: "cohub -s " + this.config.spaceId + " boards inspect " + this.config.boardId + " --json", timeoutMs: 30000 }));
     const text = (result.stdout && result.stdout.text) || '';
     if (result.exitCode !== 0) throw new Error('cohub inspect exit ' + result.exitCode);
     return parseJsonOutput(text);
   }
 
-  function mergeNodes(nodes) {
-    if (clearing) return;
+  mergeNodes(nodes) {
+    if (this.clearing) return;
     const byId = new Map();
-    for (let i = 0; i < items.length; i++) byId.set(items[i].id, items[i]);
+    for (let i = 0; i < this.items.length; i++) byId.set(this.items[i].id, this.items[i]);
     for (let j = 0; j < nodes.length; j++) { const it = nodeToItem(nodes[j]); if (it) byId.set(it.id, it); }
-    items = Array.from(byId.values());
+    this.items = Array.from(byId.values());
   }
 
-  async function refreshFromCohub() {
-    try { const snap = await cohubInspect(); boardVersion = snap.board.version; mergeNodes(snap.nodes || []); }
+  async refresh() {
+    try { const snap = await this.cohubInspect(); this.boardVersion = snap.board.version; this.mergeNodes(snap.nodes || []); }
     catch (err) { console.error('cohub refresh failed', err && err.message); }
   }
 
-  async function pushItem(item) {
+  async pushItem(item) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const tx = { baseVersion: boardVersion, operations: [{ type: 'node.create', payload: { node: itemToNode(item) } }] };
-        const parsed = await cohubApply(tx);
-        boardVersion = parsed.board.version;
+        const tx = { baseVersion: this.boardVersion, operations: [{ type: 'node.create', payload: { node: itemToNode(item) } }] };
+        const parsed = await this.cohubApply(tx);
+        this.boardVersion = parsed.board.version;
         return parsed;
-      } catch (err) { if (attempt === 0) { await refreshFromCohub(); } else { throw err; } }
+      } catch (err) { if (attempt === 0) { await this.refresh(); } else { throw err; } }
     }
   }
 
-  function enqueuePush(item) {
-    pushChain = pushChain.then(() => pushItem(item)).catch((err) => { console.error('push item failed', err && err.message); });
+  enqueuePush(item) {
+    this.pushChain = this.pushChain.then(() => this.pushItem(item)).catch((err) => { console.error('push item failed', err && err.message); });
   }
 
-  async function clearAll() {
-    items = [];
-    clearing = true;
-    if (shell) {
+  async clearAll() {
+    this.items = [];
+    this.clearing = true;
+    if (this.shell) {
       try {
-        const snap = await cohubInspect();
+        const snap = await this.cohubInspect();
         const ops = (snap.nodes || []).map((n) => ({ type: 'node.delete', payload: { nodeId: n.nodeId } }));
-        if (ops.length > 0) { const parsed = await cohubApply({ baseVersion: snap.board.version, operations: ops }); boardVersion = parsed.board.version; }
-        else { boardVersion = snap.board.version; }
+        if (ops.length > 0) { const parsed = await this.cohubApply({ baseVersion: snap.board.version, operations: ops }); this.boardVersion = parsed.board.version; }
+        else { this.boardVersion = snap.board.version; }
       } catch (err) { console.error('cohub clear failed', err && err.message); }
     }
-    clearing = false;
+    this.clearing = false;
   }
 
-  refreshFromCohub();
-  ctx.interval(refreshFromCohub, 2000);
+  // ---- Remote API (called by the client via ctx.remote.board.*) ----
+  async getItems() { return { items: this.items, spaceId: this.config.spaceId, boardId: this.config.boardId }; }
+  async addItem(args) {
+    const item = buildItem(args || {}, this.counter);
+    this.items = this.items.concat([item]);
+    if (this.shell) this.enqueuePush(item);
+    return { ok: true, id: item.id, count: this.items.length };
+  }
+  async clear() { await this.clearAll(); return { ok: true, count: 0 }; }
+  async exportBoard(format) {
+    if (!this.shell) return { path: '(no shell service)' };
+    let path;
+    if (format === 'png') {
+      path = '/tmp/cohub-board-export.png';
+      const cmd = "cohub -s " + this.config.spaceId + " boards export " + this.config.boardId + " -o " + path + " --theme light --background paper";
+      const result = await this.shell.run(this.shell.resolve({ command: cmd, timeoutMs: 60000 }));
+      if (result.exitCode !== 0) throw new Error('export png failed: ' + ((result.stderr && result.stderr.text) || ''));
+    } else {
+      path = '/tmp/cohub-board-export.json';
+      const json = JSON.stringify(this.items, null, 2);
+      const cmd = "cat > " + path + " << 'BOARDEOF'\n" + json + "\nBOARDEOF";
+      const result = await this.shell.run(this.shell.resolve({ command: cmd, timeoutMs: 30000 }));
+      if (result.exitCode !== 0) throw new Error('export json failed');
+    }
+    return { path };
+  }
+}
+remoteMethod('getItems');
+remoteMethod('addItem');
+remoteMethod('clear');
+remoteMethod('exportBoard');
+
+export function apply(ctx, config) {
+  const board = new BoardService(ctx, config);
 
   ctx.tools.register(defineTool({
     name: 'board_draw',
@@ -184,12 +237,7 @@ export function apply(ctx, config) {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, id: { type: 'string', required: true }, count: { type: 'number', required: true } } },
       render: (_args, value) => [{ type: 'text', text: 'Drew ' + value.id + ' (' + value.count + ' items total).' }],
     },
-    execute: async (args) => {
-      const item = buildItem(args, seq);
-      items = items.concat([item]);
-      if (shell) enqueuePush(item);
-      return { ok: true, id: item.id, count: items.length };
-    },
+    execute: async (args) => board.addItem(args),
   }));
 
   ctx.tools.register(defineTool({
@@ -197,7 +245,7 @@ export function apply(ctx, config) {
     description: 'Read every item currently on the shared board (Cohub-model items).',
     parameters: {},
     output: { schema: { type: 'object', additionalProperties: false, properties: { items: { type: 'array', required: true } } }, render: (_args, value) => [{ type: 'text', text: 'Board has ' + value.items.length + ' item(s): ' + JSON.stringify(value.items) }] },
-    execute: async () => ({ items }),
+    execute: async () => board.getItems(),
   }));
 
   ctx.tools.register(defineTool({
@@ -205,7 +253,7 @@ export function apply(ctx, config) {
     description: 'Clear all items from the shared board (and the synced Cohub board).',
     parameters: {},
     output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, count: { type: 'number', required: true } } }, render: () => [{ type: 'text', text: 'Cleared the board.' }] },
-    execute: async () => { await clearAll(); return { ok: true, count: 0 }; },
+    execute: async () => board.clear(),
   }));
 
   ctx.tools.register(defineTool({
@@ -215,22 +263,6 @@ export function apply(ctx, config) {
       format: { type: 'string', enum: ['json', 'png'], required: true, description: 'Export format.' },
     },
     output: { schema: { type: 'object', additionalProperties: false, properties: { path: { type: 'string', required: true } } }, render: (_args, value) => [{ type: 'text', text: 'Exported to ' + value.path }] },
-    execute: async (args) => {
-      if (!shell) return { path: '(no shell service)' };
-      let path;
-      if (args.format === 'png') {
-        path = '/tmp/cohub-board-export.png';
-        const cmd = "cohub -s " + config.spaceId + " boards export " + config.boardId + " -o " + path + " --theme light --background paper";
-        const result = await shell.run(shell.resolve({ command: cmd, timeoutMs: 60000 }));
-        if (result.exitCode !== 0) throw new Error('export png failed: ' + ((result.stderr && result.stderr.text) || ''));
-      } else {
-        path = '/tmp/cohub-board-export.json';
-        const json = JSON.stringify(items, null, 2);
-        const cmd = "cat > " + path + " << 'BOARDEOF'\n" + json + "\nBOARDEOF";
-        const result = await shell.run(shell.resolve({ command: cmd, timeoutMs: 30000 }));
-        if (result.exitCode !== 0) throw new Error('export json failed');
-      }
-      return { path };
-    },
+    execute: async (args) => board.exportBoard(args.format),
   }));
 }

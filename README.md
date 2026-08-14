@@ -1,6 +1,11 @@
 # dsh-cohub-board
 
-A DeepSeek Harness bundle that exposes a Cohub Board as agent tools. Draw and read a real [Cohub](https://cohub.run) Board (draw / arrow / geo / text / frame shapes) directly from any DSH agent, with two-way sync to the Cohub space.
+A DeepSeek Harness plugin bundle for a **Cohub Board** — draw, read, clear and export a real [Cohub](https://cohub.run) Board from any DSH agent, with two-way sync to the Cohub space.
+
+Two halves in one package:
+
+- **Host** (`dsh.bundle`): agent tools `board_draw` / `board_read` / `board_clear` / `board_export`, plus a Remote `board` service (`ctx.remote.board.*`).
+- **Web Client** (`dsh.client`): a draggable floating canvas panel (pen / line / rect / oval / text / frame tools, wheel zoom, pan, grid, fit-to-content, mini-map), wired to the Host through the Remote service.
 
 ## Install
 
@@ -9,6 +14,8 @@ dsh plugin --profile web add github:kjx-talesofai/dsh-cohub-board
 # or a local checkout:
 dsh plugin --profile web add ./cohub-board
 ```
+
+Restart `dsh web` — the canvas panel appears in the browser and the tools are registered for the agent.
 
 ## Configure
 
