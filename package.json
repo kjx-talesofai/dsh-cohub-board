@@ -1,12 +1,21 @@
 {
   "name": "dsh-cohub-board",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "index.js",
-  "files": ["index.js", "lib/client.js", "cordis.patch.yml", "README.md"],
+  "files": [
+    "index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "exports": {
-    ".": { "default": "./index.js" },
-    "./client": { "default": "./lib/client.js" },
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -24,7 +33,11 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*"
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "dependencies": {
+    "lightningcss": "^1.33.0",
+    "tsdown": "^0.22.14"
   }
 }
